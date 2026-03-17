@@ -1,0 +1,35 @@
+# Virtual environment
+.venv/
+venv/
+
+# API keys — NEVER commit
+.env
+
+# Chroma vector database (auto-generated)
+db/
+
+# Pickle indexes (auto-generated)
+*.pkl
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Auto-generated logs (user data)
+audit.csv
+feedback.csv
+
+# Per-user conversation history
+conversations/
+
+# Uploaded user documents (optional — uncomment to exclude)
+# data/

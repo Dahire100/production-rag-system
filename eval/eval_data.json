@@ -1,0 +1,14 @@
+[
+  {
+    "question": "What is LangChain?",
+    "ground_truth": "LangChain is a framework for developing applications powered by large language models."
+  },
+  {
+    "question": "What does Cohere provide?",
+    "ground_truth": "Cohere provides natural language processing models, including a reranker API."
+  },
+  {
+    "question": "What does RAG stand for and what is it used for?",
+    "ground_truth": "RAG stands for Retrieval-Augmented Generation. It is used to enhance LLMs with external knowledge by retrieving relevant documents from a database before generating a response."
+  }
+]

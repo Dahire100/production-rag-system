@@ -1,0 +1,35 @@
+name: RAG Evaluation Pipeline
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  push:
+    branches: [ "main" ]
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    
+    env:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .
+        pip install ragas
+        
+    - name: Run Synthetic Data Ingestion
+      run: python src/ingest.py
+        
+    - name: Execute Ragas Evaluator Suite
+      run: python -m pytest eval/test_rag.py -v -s -W ignore::DeprecationWarning

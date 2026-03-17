@@ -1,0 +1,5 @@
+LangChain is a framework for developing applications powered by large language models.
+
+Cohere is a Canadian startup that provides natural language processing models, including an industry-leading rerankar API.
+
+RAG stands for Retrieval-Augmented Generation. It is a technique to enhance LLMs with external knowledge by retrieving relevant documents from a database before generating a response.
