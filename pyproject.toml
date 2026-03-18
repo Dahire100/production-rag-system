@@ -21,7 +21,9 @@ dependencies = [
     "langchain-chroma",
     "python-dotenv",
     "pytest",
-    "streamlit"
+    "streamlit",
+    "ragas",
+    "datasets"
 ]
 requires-python = ">=3.10"
 

@@ -12,6 +12,8 @@ from src.generate      import (stream_answer, get_last_docs, get_followup_sugges
                                 summarize_document, reset_chain)
 from src.config        import (CHUNKS_PKL, GROQ_MODEL, EMBED_MODEL, RERANK_MODEL,
                                 CHUNK_SIZE, RERANK_TOP_N, MULTI_QUERY_N)
+from src.observability import (get_store, get_latency_percentiles,
+                                get_cost_summary, get_quality_summary, get_user_usage)
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -57,6 +59,42 @@ st.markdown("""
                padding:16px;text-align:center;border:1px solid rgba(255,255,255,.07)}
     .stat-num{font-size:28px;font-weight:800;color:#aac4ff}
     .stat-lbl{font-size:12px;color:#888;margin-top:2px}
+
+    /* Grafana styles */
+    .grafana-panel {
+        background-color: #111217;
+        border: 1px solid #2b2d39;
+        border-radius: 4px;
+        padding: 16px;
+        margin-bottom: 16px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+    }
+    .grafana-title {
+        color: #B6C0CF;
+        font-size: 13px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 8px;
+    }
+    .grafana-value {
+        font-size: 32px;
+        font-weight: 700;
+        line-height: 1.2;
+    }
+    .grafana-value.green { color: #73BF69; }
+    .grafana-value.red { color: #F2495C; }
+    .grafana-value.orange { color: #FF9830; }
+    .grafana-value.blue { color: #5794F2; }
+    .grafana-subtext {
+        font-size: 11px;
+        color: #8E9BAE;
+        margin-top: 4px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -109,18 +147,39 @@ if chunks_exist:
             fn = os.path.basename(c.metadata.get("source","unknown"))
             doc_chunks_map.setdefault(fn,[]).append(c)
     except Exception: pass
-
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     # User badge
-    st.markdown(
-        f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
-        f'<div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#667eea,#764ba2);'
-        f'display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px">'
-        f'{user[0].upper()}</div>'
-        f'<div><div style="font-weight:700;font-size:15px">{user}</div>'
-        f'<div style="font-size:11px;color:#666">Enterprise Plan</div></div></div>',
-        unsafe_allow_html=True)
+    if user == "admin":
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
+            f'<div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#667eea,#764ba2);'
+            f'display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;color:#fff">'
+            f'{user[0].upper()}</div>'
+            f'<div><div style="font-weight:700;font-size:15px">Administrator</div>'
+            f'<div style="font-size:11px;color:#666">Unlimited Access</div></div></div>',
+            unsafe_allow_html=True)
+    else:
+        usage = get_user_usage(user)
+        tokens_used = usage["tokens"]
+        cost_usd = usage["cost_usd"]
+        limit_pct = min(100, int(tokens_used / 1000 * 100))
+        bg_color = "#e74c3c" if limit_pct >= 100 else "#2ecc71"
+        
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">'
+            f'<div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#667eea,#764ba2);'
+            f'display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;color:#fff">'
+            f'{user[0].upper()}</div>'
+            f'<div><div style="font-weight:700;font-size:15px">{user}</div>'
+            f'<div style="font-size:11px;color:#aac4ff">Cost to date: ${cost_usd:.5f}</div></div></div>'
+            f'<div style="font-size:11px;color:#888;margin-bottom:4px;display:flex;justify-content:space-between">'
+            f'<span>Free Tokens: <b>{tokens_used:,}</b> / 1,000</span>'
+            f'<span>{limit_pct}%</span></div>'
+            f'<div style="background:rgba(255,255,255,.1);height:4px;border-radius:2px;margin-bottom:12px">'
+            f'<div style="background:{bg_color};height:100%;width:{limit_pct}%;border-radius:2px"></div></div>',
+            unsafe_allow_html=True)
+        
     if st.button("Sign Out", use_container_width=True): logout(); st.rerun()
 
     st.markdown("---")
@@ -215,8 +274,8 @@ with st.sidebar:
         st.markdown(f'<div class="pill pill-info">📊 {total_segs} segments</div>', unsafe_allow_html=True)
 
 # ── Main tabs ─────────────────────────────────────────────────────────────────
-tab_chat, tab_explorer, tab_admin, tab_settings = st.tabs(
-    ["💬 Chat", "🔍 Document Explorer", "📊 Admin Panel", "⚙️ Settings"]
+tab_chat, tab_explorer, tab_admin, tab_obs, tab_settings = st.tabs(
+    ["💬 Chat", "🔍 Document Explorer", "📊 Admin Panel", "🔭 Observability", "⚙️ Settings"]
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -302,6 +361,13 @@ with tab_chat:
     if st.session_state.pending_prompt: st.session_state.pending_prompt = None
 
     if active:
+        # Check token limits!
+        current_usage = get_user_usage(user)
+        if user != "admin" and current_usage["tokens"] >= 1000:
+            with st.chat_message("assistant"):
+                st.error("🚫 **Free tier limit reached.** You have used all 1,000 free tokens. Please upgrade your plan or contact your administrator.")
+            st.stop()
+
         st.session_state.messages.append({"role":"user","content":active})
         with st.chat_message("user"): st.markdown(active)
 
@@ -309,7 +375,8 @@ with tab_chat:
             history = st.session_state.messages[:-1]
             full_ans = st.write_stream(
                 stream_answer(active, history=history,
-                              extra_instructions=st.session_state.custom_prompt)
+                              extra_instructions=st.session_state.custom_prompt,
+                              user=user)
             )
             docs     = get_last_docs()
             contexts = [d.page_content for d in docs]
@@ -433,6 +500,58 @@ with tab_admin:
                            open("audit.csv","rb").read() if os.path.exists("audit.csv") else b"",
                            "audit.csv","text/csv")
 
+    st.divider()
+
+    if is_admin:
+        st.markdown(
+            """
+            <div style="padding:16px; border-radius:12px; background:linear-gradient(90deg, #111217, #1c1e26); border-left:4px solid #5794F2; margin-bottom:16px;">
+                <h4 style="margin:0; color:#fff; font-size:18px;">🕵️‍♂️ User Chat Explorer</h4>
+                <p style="margin:4px 0 0 0; color:#B6C0CF; font-size:13px;">Securely inspect localized conversation histories across all user accounts.</p>
+            </div>
+            """, unsafe_allow_html=True
+        )
+        
+        from src.config import CONVERSATIONS_DIR
+        import os, json
+        
+        if os.path.exists(CONVERSATIONS_DIR):
+            users = [u for u in os.listdir(CONVERSATIONS_DIR) if os.path.isdir(os.path.join(CONVERSATIONS_DIR, u))]
+            if users:
+                c1, c2 = st.columns(2)
+                with c1:
+                    user_sel = st.selectbox("Select Target User", users)
+                
+                user_convs = list_conversations(user_sel)
+                if user_convs:
+                    with c2:
+                        conv_id = st.selectbox("Select Chat History", [c["id"] for c in user_convs], 
+                                               format_func=lambda x: next((f"{c['title']} ({c['count']} msgs)" for c in user_convs if c["id"] == x), x))
+                    
+                    if conv_id:
+                        chat_data = load_conversation(user_sel, conv_id)
+                        if chat_data and "messages" in chat_data:
+                            # Render chat in an elegant container box
+                            st.markdown(f"##### Transcript: `{conv_id}`")
+                            with st.container(border=True, height=500):
+                                for m in chat_data["messages"]:
+                                    # Use native chat_message components to make it look like a real conversation!
+                                    with st.chat_message(m["role"]):
+                                        st.markdown(m["content"])
+                                        # Render citations if they exist in history
+                                        if m.get("contexts"):
+                                            with st.expander(f"📚 {len(m['contexts'])} Citations", expanded=False):
+                                                for i, ctx in enumerate(m["contexts"]):
+                                                    st.markdown(
+                                                        f'<div class="cit-card">'
+                                                        f'<div class="cit-head">📄 [{m.get("sources", ["?"])[i]}]'
+                                                        f'</div>{ctx[:200]}…</div>', unsafe_allow_html=True)
+                else:
+                    st.info(f"{user_sel} currently has no stored conversations.")
+            else:
+                st.info("No registered users with conversation histories found.")
+        st.divider()
+
     if is_admin and feedback:
         import pandas as pd
         st.markdown("#### 👍👎 Feedback Log")
@@ -453,7 +572,163 @@ with tab_admin:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 4 — SETTINGS
+# TAB 4 — OBSERVABILITY
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_obs:
+    import time as _time
+    import math
+
+    # Header and controls
+    obs_col1, obs_col2 = st.columns([3, 1])
+    with obs_col1:
+        st.markdown("<h2 style='margin-bottom:0;color:#fff'>Grafana Observability</h2>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#B6C0CF;font-size:14px;margin-top:0'>Real-time telemetry & RAG performance metrics</p>", unsafe_allow_html=True)
+    with obs_col2:
+        window_h = st.selectbox(
+            "Time Range",
+            options=[1, 6, 12, 24, 48, 168],
+            index=3,
+            format_func=lambda h: f"Last {h} hours" if h < 168 else "Last 7 days",
+            label_visibility="collapsed"
+        )
+
+    is_admin_obs = (user == "admin")
+    if not is_admin_obs:
+        st.warning("🔒 Full observability metrics are visible to admin users only.")
+
+    obs_store = get_store()
+
+    # ── ROW 1: Latency Gauges ──────────────────────────────────────────
+    st.markdown("<h4 style='color:#E0E6ED;border-bottom:1px solid #2b2d39;padding-bottom:8px;margin-top:20px'>Latency Percentiles</h4>", unsafe_allow_html=True)
+    ops = ["rag_e2e", "retrieval", "llm_generate", "summarize"]
+    op_labels = {
+        "rag_e2e":      "End-to-End",
+        "retrieval":    "Retrieval",
+        "llm_generate": "LLM Generate",
+        "summarize":    "Summarize",
+    }
+    lat_cols = st.columns(len(ops))
+    
+    for i, op in enumerate(ops):
+        pct = get_latency_percentiles(op, window_hours=window_h)
+        # Determine color based on p50
+        val = pct["p50"]
+        if val < 2.0: color_cls = "green"
+        elif val < 5.0: color_cls = "orange"
+        else: color_cls = "red"
+        
+        with lat_cols[i]:
+            st.markdown(
+                f'<div class="grafana-panel">'
+                f'<div class="grafana-title">{op_labels[op]} P50</div>'
+                f'<div class="grafana-value {color_cls}">{val} <span style="font-size:16px">s</span></div>'
+                f'<div class="grafana-subtext">P95: {pct["p95"]}s | n={pct["count"]}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    # ── ROW 2: Quality Metrics (RAGAS) ─────────────────────────────────
+    st.markdown("<h4 style='color:#E0E6ED;border-bottom:1px solid #2b2d39;padding-bottom:8px;margin-top:10px'>Quality Gate (CI)</h4>", unsafe_allow_html=True)
+    q_summary = get_quality_summary(window_hours=window_h)
+
+    if q_summary["count"] == 0:
+        st.info("No quality scores recorded yet. Run `python eval/regression_gate.py` to populate.")
+    else:
+        from src.observability import QUALITY_THRESHOLDS
+        qm = [
+            ("Faithfulness",      q_summary["faithfulness"],      QUALITY_THRESHOLDS["faithfulness"]),
+            ("Answer Relevancy",  q_summary["answer_relevancy"],  QUALITY_THRESHOLDS["answer_relevancy"]),
+            ("Context Precision", q_summary["context_precision"], QUALITY_THRESHOLDS["context_precision"]),
+        ]
+        q_cols = st.columns(len(qm))
+        for i, (label, value, threshold) in enumerate(qm):
+            ok = value >= threshold
+            color_cls = "green" if ok else "red"
+            with q_cols[i]:
+                st.markdown(
+                    f'<div class="grafana-panel">'
+                    f'<div class="grafana-title">{label}</div>'
+                    f'<div class="grafana-value {color_cls}">{value:.3f}</div>'
+                    f'<div class="grafana-subtext">Threshold: {threshold} ({"PASS" if ok else "FAIL"})</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+    # ── ROW 3: Cost & Usage Dashboard ──────────────────────────────────
+    cost = get_cost_summary(window_hours=window_h)
+    
+    st.markdown("<h4 style='color:#E0E6ED;border-bottom:1px solid #2b2d39;padding-bottom:8px;margin-top:10px'>Usage & Infrastructure</h4>", unsafe_allow_html=True)
+    
+    cc1, cc2, cc3 = st.columns([1,1,2])
+    with cc1:
+        st.markdown(
+            f'<div class="grafana-panel" style="align-items:flex-start">'
+            f'<div class="grafana-title">Total Spend</div>'
+            f'<div class="grafana-value blue">${cost["total_cost_usd"]:.5f}</div>'
+            f'<div class="grafana-subtext">{cost["total_requests"]} LLM Requests</div>'
+            f'</div>', unsafe_allow_html=True)
+            
+    with cc2:
+        st.markdown(
+            f'<div class="grafana-panel" style="align-items:flex-start">'
+            f'<div class="grafana-title">Token Volume</div>'
+            f'<div class="grafana-value blue">{cost["total_input_tokens"] + cost["total_output_tokens"]:,}</div>'
+            f'<div class="grafana-subtext">In: {cost["total_input_tokens"]:,} | Out: {cost["total_output_tokens"]:,}</div>'
+            f'</div>', unsafe_allow_html=True)
+            
+    with cc3:
+        if is_admin_obs:
+            ts_data = obs_store.get_cost_timeseries(window_hours=window_h)
+            if len(ts_data) >= 2:
+                import pandas as pd
+                df_ts = pd.DataFrame(ts_data)
+                df_ts["time"] = pd.to_datetime(df_ts["bucket_ts"], unit="s")
+                df_ts = df_ts.set_index("time")
+                
+                # Make it look a bit more like Grafana charts by adjusting theme
+                st.area_chart(df_ts["cost"], height=130, use_container_width=True, color="#5794F2")
+            else:
+                st.markdown(
+                    f'<div class="grafana-panel" style="height:130px;justify-content:center">'
+                    f'<div class="grafana-subtext">Not enough data points for timeseries chart</div>'
+                    f'</div>', unsafe_allow_html=True)
+
+
+    # ── ROW 4: Distributed Traces  ─────────────────────────────────────
+    if is_admin_obs:
+        st.markdown("<h4 style='color:#E0E6ED;border-bottom:1px solid #2b2d39;padding-bottom:8px;margin-top:10px'>Traces Explorer</h4>", unsafe_allow_html=True)
+        traces = obs_store.get_recent_traces(limit=25)
+        if traces:
+            import pandas as pd
+            df_tr = pd.DataFrame(traces)
+            
+            display_tr = [c for c in ["name","status","latency_s","trace_cost","input_tokens","output_tokens","trace_id"]
+                          if c in df_tr.columns]
+                          
+            # Format dataframe to look a bit cleaner
+            df_tr["latency_s"] = df_tr["latency_s"].apply(lambda x: f"{x:.3f} s" if x else "—")
+            if "trace_cost" in df_tr:
+                df_tr["trace_cost"] = df_tr["trace_cost"].apply(lambda x: f"${x:.6f}" if x else "$0.000000")
+            
+            st.dataframe(
+                df_tr[display_tr].rename(columns={
+                    "name": "Operation", "status": "Status", "latency_s": "Latency",
+                    "trace_cost": "Cost", "input_tokens": "Tokens (In)",
+                    "output_tokens": "Tokens (Out)", "trace_id": "Trace ID"
+                }),
+                use_container_width=True, hide_index=True
+            )
+        else:
+            st.info("No traces recorded yet.")
+
+        colA, colB = st.columns([1,5])
+        with colA:
+            if st.button("🔄 Refresh Data", type="primary", use_container_width=True):
+                st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 5 — SETTINGS
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_settings:
     st.markdown("### ⚙️ Settings")

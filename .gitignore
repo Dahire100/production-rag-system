@@ -33,3 +33,10 @@ conversations/
 
 # Uploaded user documents (optional — uncomment to exclude)
 # data/
+
+# Observability metrics database (auto-generated, contains telemetry)
+metrics.db
+
+# CI gate result artifacts
+eval/gate_results.json
+eval/smoke_gate_results.json
